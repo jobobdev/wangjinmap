@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no"
+    />
+    <title>왕진 병원 지도</title>
+
+    <link rel="stylesheet" href="/stylesheets/style.css" />
+
+    <link rel="stylesheet" type="text/css" href="/stylesheets/icons.css" />
+    <link
+      href="https://fonts.googleapis.com/css?family=Noto+Sans+KR&display=swap&subset=korean&text=담당업무"
+      rel="stylesheet"
+    />
+    <script
+      src="https://kit.fontawesome.com/a10b8ac274.js"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      type="text/javascript"
+      src="https://openapi.map.naver.com/openapi/v3/maps.js?ncpClientId=o41au83y93"
+    ></script>
+
+    <script
+      src="https://code.jquery.com/jquery-3.6.1.min.js"
+      integrity="sha256-o88AwQnZB+VDvE9tvIXrMQaPlFFSUTR+nldQm1LuPXQ="
+      crossorigin="anonymous"
+    ></script>
+
+    <script src="//t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
+    <script
+      type="text/javascript"
+      src="//dapi.kakao.com/v2/maps/sdk.js?appkey=89354d9d5a253413891a89dfbbb10323&libraries=services"
+    ></script>
+
+    <script
+      type="text/javascript"
+      src="/javascripts/markerClustering.js"
+    ></script>
+    <script
+      type="text/javascript"
+      src="/javascripts/loadingoverlay.min.js"
+    ></script>
+
+    <script type="text/javascript" src="/data/data_m.js"></script>
+    <script type="text/javascript" src="/data/data_km.js"></script>
+  </head>
+
+  <body>
+    <div
+      id="layer"
+      style="
+        display: none;
+
+        overflow: hidden;
+        z-index: 10000;
+        -webkit-overflow-scrolling: touch;
+      "
+    >
+      <div id="popup_close_bar">
+        <i class="fa-solid fa-xmark" id="btnCloseLayer"></i>
+      </div>
+    </div>
+
+    <div id="root">
+      <div id="nav_bar_wrap">
+        <div id="title_search">
+          <div id="title_text">왕진병원맵</div>
+          <div id="address_search">
+            <input
+              type="text"
+              id="search_input"
+              placeholder="주소 검색"
+              onfocus="this.blur()"
+            />
+            <i id="search_icon" class="fa-solid fa-location-dot"></i>
+          </div>
+        </div>
+        <div id="current">
+          <i class="fa-solid fa-location-crosshairs"></i>
+        </div>
+      </div>
+      <div id="map" style="width: 100%; height: 100%"></div>
+    </div>
+  </body>
+
+  <script>
+    // loading on
+    $.LoadingOverlay("show", {
+      background: "rgba(0, 0, 0, 0.5)",
+      image: "",
+      maxSize: 60,
+      fontawesome: "fa fa-spinner fa-pulse fa-fw",
+      fontawesomeColor: "#FFFFFF",
+    });
+
+    var markerList = [];
+    var infowindowList = [];
+    var markerClustering;
+
+    // wait until all the initial data are set
+    $(document).ready(async function () {
+      let result;
+      try {
+        result = await geoLocation();
+        initialLat = result.coords.latitude;
+        initialLng = result.coords.longitude;
+        currentMarker = true;
+      } catch (err) {
+        alert(err);
+        initialLat = 37.5665;
+        initialLng = 126.9779;
+        currentMarker = false;
+      }
+
+      // kill the loading
+      $.LoadingOverlay("hide");
+
+      // show map
+      var mapOptions = {
+        center: new naver.maps.LatLng(initialLat, initialLng),
+        zoom: 16,
+        minZoon: 7,
+        zoomControl: true,
+        mapTypeControl: true,
+        pinchZoon: true,
+        tileTransition: true,
+        zoomControlOptions: {
+          position: naver.maps.Position.RIGHT_CENTER,
+          style: naver.maps.ZoomControlStyle.SMALL,
+        },
+        mapTypeControlOptions: {
+          position: naver.maps.Position.BOTTOM_RIGHT,
+        },
+      };
+      var map = new naver.maps.Map("map", mapOptions);
+
+      // map boundary configuration
+      var bounds = map.getBounds(),
+        southWest = bounds.getSW(),
+        northEast = bounds.getNE(),
+        lngSpan = northEast.lng() - southWest.lng(),
+        latSpan = northEast.lat() - southWest.lat();
+
+      // the marker list used in position update
+      let client_position = [];
+
+      // variable used to prevent overlapping marker for current position
+      let currentUse = true;
+
+      // put a marker of the user's current location only when the location is taken successfully
+      if (currentUse && currentMarker) {
+        marker = new naver.maps.Marker({
+          map: map,
+          position: new naver.maps.LatLng(initialLat, initialLng),
+          title: "내 위치",
+          icon: {
+            content:
+              '<div class="current_marker_out"><div class="current_marker_in"></div></div>',
+          },
+        });
+        // preventing overlapping markers
+        if (client_position.length == 0) {
+          client_position.push(marker);
+        } else {
+          let pre_marker = client_position.splice(0, 1);
+          pre_marker[0].setMap(null);
+        }
+        currentUse = false;
+      }
+      console.log(currentUse);
+      //   redirect map to current position and mark only when the marker is not there
+      $("#current").click(async function () {
+        let result;
+        try {
+          result = await geoLocation();
+          const currentLat = result.coords.latitude;
+          const currentLng = result.coords.longitude;
+          let currentLatLng = new naver.maps.LatLng(currentLat, currentLng);
+          if (currentUse) {
+            marker = new naver.maps.Marker({
+              map: map,
+              position: currentLatLng,
+              title: "내 위치",
+              icon: {
+                content:
+                  '<div class="current_marker_out"><div class="current_marker_in"></div></div>',
+              },
+            });
+            if (client_position.length == 0) {
+              client_position.push(marker);
+            } else {
+              let pre_marker = client_position.splice(0, 1);
+              pre_marker[0].setMap(null);
+            }
+            currentUse = false;
+          }
+          map.setZoom(16, false);
+          map.panTo(currentLatLng);
+        } catch (err) {
+          alert(err);
+        }
+      });
+
+      //start marking all the data
+
+      // marking medicine location
+      for (var i in data_m) {
+        var target_m = data_m[i];
+        var latlng_m = new naver.maps.LatLng(target_m.lat, target_m.lng);
+        var title = target_m.title;
+        var sort = target_m.sort;
+
+        var position = new naver.maps.LatLng(
+          southWest.lat() + latSpan * Math.random(),
+          southWest.lng() + lngSpan * Math.random()
+        );
+
+        marker = new naver.maps.Marker({
+          title: title,
+          map: map,
+          position: latlng_m,
+          sort: sort,
+          icon: {
+            content:
+              '<div class="marker_m_out"><div class="marker_m_in"><div class="marker_m_cross_h"></div><div class="marker_m_cross_v"></div></div></div>',
+          },
+        });
+        // // 보여줄 infowindow content 설정
+        var content_m = `<div class='infowindow_wrap'>
+            <div class='infowindow_title'>방문진료 의원</div>
+            <div class='infowindow_m_title'><span>${target_m.title}</span><span>${target_m.department}</span></div>
+            <div class='infowindow_address_road'>${target_m.address_road}</div>
+            <div class='infowindow_address'>${target_m.address}</div>
+            <div class='infowindow_contact'>${target_m.contact}</div>
+              </div>`;
+
+        // // 기본 infowindow 설정값을 안보이게 만듬
+        var infowindow = new naver.maps.InfoWindow({
+          content: content_m,
+          backgroundColor: "#00ff0000",
+          borderColor: "#00ff0000",
+          anchorSize: new naver.maps.Size(20, 20),
+        });
+
+        markerList.push(marker);
+        infowindowList.push(infowindow);
+      }
+
+      // marking korean medicine location
+      for (var i in data_km) {
+        var target_km = data_km[i];
+        var latlng_km = new naver.maps.LatLng(target_km.lat, target_km.lng);
+        var title = target_km.title;
+        var sort = target_km.sort;
+        var position = new naver.maps.LatLng(
+          southWest.lat() + latSpan * Math.random(),
+          southWest.lng() + lngSpan * Math.random()
+        );
+        marker = new naver.maps.Marker({
+          title: title,
+          map: map,
+          position: latlng_km,
+          sort: sort,
+          icon: {
+            content:
+              '<div class="marker_km_out"><div class="marker_km_in"><div class="marker_km_cross_h"></div><div class="marker_km_cross_v"></div></div></div>',
+          },
+        });
+        // // 보여줄 정보 content로 설정
+        var content_km = `<div class='infowindow_wrap'>
+            <div class='infowindow_title'>방문진료 한의원</div>
+              <div class='infowindow_m_title'><span>${target_km.title}</span><span>${target_km.department}</span></div>
+              <div class='infowindow_address_road'>${target_km.address_road}</div>
+              <div class='infowindow_address'>${target_km.address}</div>
+              <div class='infowindow_contact'>${target_km.contact}</div>
+              </div>`;
+
+        // // 기본 infowindow 설정값을 안보이게 만듬
+        var infowindow = new naver.maps.InfoWindow({
+          content: content_km,
+          backgroundColor: "#00ff0000",
+          borderColor: "#00ff0000",
+          anchorSize: new naver.maps.Size(20, 20),
+        });
+
+        markerList.push(marker);
+        infowindowList.push(infowindow);
+      }
+
+      // marker clustering
+      var clusterMarker1 = {
+          content: '<div id="cluster_marker_1"></div>',
+        },
+        clusterMarker2 = {
+          content: '<div id="cluster_marker_2"></div>',
+        },
+        clusterMarker3 = {
+          content: '<div id="cluster_marker_3"></div>',
+        },
+        clusterMarker4 = {
+          content: '<div id="cluster_marker_4"></div>',
+        },
+        clusterMarker5 = {
+          content: '<div id="cluster_marker_5"></div>',
+        },
+        clusterMarker6 = {
+          content: '<div id="cluster_marker_6"></div>',
+        };
+
+      if (markerClustering) {
+        markerClustering.map = null;
+        markerClustering = null;
+      }
+
+      // marker cluster function configurations
+      markerClustering = new MarkerClustering({
+        minClusterSize: 2,
+        maxZoom: 16,
+        map: map,
+        markers: markerList,
+        disableClickZoom: false,
+        gridSize: 200,
+        icons: [
+          clusterMarker1,
+          clusterMarker2,
+          clusterMarker3,
+          clusterMarker4,
+          clusterMarker5,
+          clusterMarker6,
+        ],
+        indexGenerator: [9, 49, 149, 249, 499, 999],
+        stylingFunction: function (clusterMarker, count) {
+          $(clusterMarker.getElement()).find("div:first-child").text(count);
+        },
+      });
+
+      // marker update to show only markers inside the map boundary
+      naver.maps.Event.addListener(map, "zoom_changed", function () {
+        updateMarkers(map, markerList);
+      });
+
+      naver.maps.Event.addListener(map, "dragend", function () {
+        updateMarkers(map, markerList);
+      });
+
+      function updateMarkers(map, markers) {
+        var mapBounds = map.getBounds();
+        var marker, position;
+
+        for (var i = 0; i < markerList.length; i++) {
+          marker = markerList[i];
+          position = marker.getPosition();
+
+          if (mapBounds.hasLatLng(position)) {
+            showMarker(map, marker);
+          } else {
+            hideMarker(map, marker);
+          }
+        }
+      }
+
+      function showMarker(map, marker) {
+        if (marker.setMap()) return;
+        marker.setMap(map);
+      }
+
+      function hideMarker(map, marker) {
+        if (!marker.setMap()) return;
+        marker.setMap(null);
+      }
+
+      // infowindow setting
+      for (var i = 0, ii = markerList.length; i < ii; i++) {
+        naver.maps.Event.addListener(map, "click", ClickMap(i));
+        // naver.maps.Event.addListener(
+        //   markerList[i],
+        //   "mouseover",
+        //   markerMouseOver(i)
+        // );
+        // naver.maps.Event.addListener(
+        //   markerList[i],
+        //   "mouseout",
+        //   markerMouseOut(i)
+        // );
+
+        naver.maps.Event.addListener(
+          markerList[i],
+          "click",
+          getClickHandler(i)
+        );
+      }
+
+      //   function markerMouseOver(i) {
+      //     return function () {
+      //       var infowindow = infowindowList[i];
+      //       var marker = markerList[i];
+      //       var infoCenter = new naver.maps.LatLng(
+      //         marker.position.y,
+      //         marker.position.x
+      //       );
+
+      //       var infowindow = infowindowList[i];
+      //       if (infowindow.getMap()) {
+      //         infowindow.close();
+      //       } else {
+      //         infowindow.open(map, marker);
+      //       }
+      //     };
+      //   }
+
+      //   function markerMouseOut(i) {
+      //     return function () {
+      //       var infowindow = infowindowList[i];
+      //       infowindow.close();
+      //     };
+      //   }
+
+      function ClickMap(i) {
+        return function () {
+          var infowindow = infowindowList[i];
+          infowindow.close();
+        };
+      }
+
+      function getClickHandler(i) {
+        return function () {
+          var marker = markerList[i];
+          var infowindow = infowindowList[i];
+          if (infowindow.getMap()) {
+            infowindow.close();
+          } else {
+            infowindow.open(map, marker);
+          }
+        };
+      }
+
+      // 카카오 지도 api 주소 검색 팝업
+      let ps = new kakao.maps.services.Places();
+      let search_arr = [];
+      var searchedInfowindows = [];
+      var geocoder = new daum.maps.services.Geocoder();
+
+      // 우편번호 찾기 화면을 넣을 element
+      var element_layer = document.getElementById("layer");
+
+      $("#btnCloseLayer").on("click", function () {
+        // iframe을 넣은 element를 안보이게 한다.
+        element_layer.style.display = "none";
+      });
+
+      $("#address_search").on("click", function (e) {
+        new daum.Postcode({
+          oncomplete: function (data) {
+            var addr = data.address; // 최종 주소 변수
+            document.getElementById("search_input").value = addr;
+            // 주소로 상세 정보를 검색
+            geocoder.addressSearch(data.address, function (results, status) {
+              // 정상적으로 검색이 완료됐으면
+              if (status === daum.maps.services.Status.OK) {
+                var result = results[0]; //첫번째 결과의 값을 활용
+                // console.log(data.address);
+
+                // 해당 주소에 대한 좌표를 받아서
+                var searchedLocation = new naver.maps.LatLng(
+                  result.y,
+                  result.x
+                );
+                marker = new naver.maps.Marker({
+                  position: searchedLocation,
+                  map: map,
+                  title: result.address_name,
+                });
+                if (search_arr.length == 0) {
+                  search_arr.push(marker);
+                } else {
+                  search_arr.push(marker);
+                  //pre_marker는 이전에 검색한 위치의 marker, splice(0, 1)은 arr안의 0번째 아이템부터 1개를 빼낸다. 그리고 그걸 pre_marker로 할당한 것.
+                  let pre_marker = search_arr.splice(0, 1);
+                  // setMap(null) == 제거하기
+                  pre_marker[0].setMap(null);
+                }
+
+                console.log(marker.title);
+                var content = `<div class='searchedInfowindow_wrap'>
+                  <div class='searchedInfowindow_title'>${marker.title}</div>
+                  </div>`;
+
+                searchedInfowindows.push(
+                  new naver.maps.InfoWindow({
+                    content: content,
+                    backgroundColor: "#00ff0000",
+                    borderColor: "#00ff0000",
+                    anchorSize: new naver.maps.Size(0, 0),
+                  })
+                );
+                // console.log(searchedMarkers[0]);
+
+                map.setZoom(16, false);
+                map.panTo(searchedLocation);
+                element_layer.style.display = "none";
+              }
+            });
+          },
+          width: "100%",
+          height: "100%",
+          maxSuggestItems: 5,
+        }).embed(element_layer);
+
+        // iframe을 넣은 element를 보이게 한다.
+        element_layer.style.display = "block";
+
+        // iframe을 넣은 element의 위치를 화면의 가운데로 이동시킨다.
+        initLayerPosition();
+      });
+
+      var popupWidth;
+      var popupHeight;
+
+      //innerWidth / innerHeight / outerWidth / outerHeight 지원 브라우저
+      if (
+        window.innerWidth &&
+        window.innerHeight &&
+        window.outerWidth &&
+        window.outerHeight
+      ) {
+        popupWidth = $("#title_search").outerWidth();
+        popupHeight = 350;
+      }
+      //   } else {
+      //     var strDocumentWidth = $(document).outerWidth();
+      //     var strDocumentHeight = $(document).outerHeight();
+
+      //     window.resizeTo(strDocumentWidth, strDocumentHeight);
+
+      //     var strMenuWidth = strDocumentWidth - $(window).width();
+      //     var strMenuHeight = strDocumentHeight - $(window).height();
+
+      //     popupWidth = $("#title_search").outerWidth() + strMenuWidth;
+      //     popupHeight = $("#title_search").outerHeight() + strMenuHeight;
+      //   }
+
+      function initLayerPosition() {
+        var width = popupWidth; //우편번호서비스가 들어갈 element의 width
+        var height = popupHeight; //우편번호서비스가 들어갈 element의 height
+
+        // 위에서 선언한 값들을 실제 element에 넣는다.
+        element_layer.style.width = width + "px";
+        element_layer.style.height = height + "px";
+        element_layer.style.border = "none";
+        element_layer.style.left =
+          (window.innerWidth || document.documentElement.clientWidth) -
+          (window.innerWidth || document.documentElement.clientWidth) +
+          20 +
+          "px";
+        element_layer.style.top =
+          (window.innerHeight || document.documentElement.clientHeight) -
+          (window.innerHeight || document.documentElement.clientHeight) +
+          20 +
+          "px";
+      }
+    }); // document ready function end //
+
+    // async function for getting geolocation
+    async function geoLocation() {
+      let promise = new Promise((resolve, reject) => {
+        function onGeoSuccess(position) {
+          resolve(position);
+        }
+        function onGeoFail() {
+          reject("위치정보를 받아오지 못했습니다.");
+        }
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(onGeoSuccess, onGeoFail);
+        } else {
+        }
+      });
+
+      let result = await promise;
+      return result;
+    }
+  </script>
+</html>
